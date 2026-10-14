@@ -3,11 +3,16 @@ import { db } from "@crm/db";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
+	type CallToolRequest,
 	CallToolRequestSchema,
 	type CallToolResult,
 	ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import type { AnyRouter } from "@trpc/server";
+import {
+	type AnyRouter,
+	callTRPCProcedure,
+	getTRPCErrorFromUnknown,
+} from "@trpc/server";
 import { fromNodeHeaders } from "better-auth/node";
 import type { Request, Response } from "express";
 import type { BaseTrpcContext } from "../trpc/context.types";
@@ -58,53 +63,41 @@ async function sessionFromToken(req: Request): Promise<Session | null> {
 			ipAddress: null,
 			userAgent: req.headers["user-agent"] ?? null,
 		},
-	} as unknown as Session;
+	};
 }
 
-function errorText(error: unknown): string {
-	if (error instanceof Error) {
-		const code = (error as { code?: unknown }).code;
-		return typeof code === "string"
-			? `${code}: ${error.message}`
-			: error.message;
-	}
-	return String(error);
-}
-
+/**
+ * The same entry point `createCaller` uses: input goes through the
+ * procedure's own parser and every middleware runs, exactly as over HTTP.
+ */
 async function callTool(
 	appRouter: AnyRouter,
 	tool: McpTool,
 	ctx: BaseTrpcContext,
-	args: Record<string, unknown> | undefined,
+	params: CallToolRequest["params"],
 ): Promise<CallToolResult> {
-	const caller = appRouter.createCaller(ctx) as Record<string, unknown>;
-	const procedure = tool.path
-		.split(".")
-		.reduce<unknown>(
-			(node, key) => (node as Record<string, unknown> | undefined)?.[key],
-			caller,
-		);
-
-	if (typeof procedure !== "function") {
-		return {
-			isError: true,
-			content: [{ type: "text", text: `Unknown procedure ${tool.path}.` }],
-		};
-	}
-
-	const input = tool.wrapped ? args?.input : args;
+	const input = tool.wrapped ? params.arguments?.input : params.arguments;
 
 	try {
-		const result = await procedure(input);
+		const result = await callTRPCProcedure({
+			router: appRouter,
+			path: tool.path,
+			type: tool.type,
+			ctx,
+			getRawInput: async () => input,
+			signal: undefined,
+			batchIndex: 0,
+		});
 		return {
 			content: [
 				{ type: "text", text: JSON.stringify(result ?? null, null, 2) },
 			],
 		};
 	} catch (error) {
+		const failure = getTRPCErrorFromUnknown(error);
 		return {
 			isError: true,
-			content: [{ type: "text", text: errorText(error) }],
+			content: [{ type: "text", text: `${failure.code}: ${failure.message}` }],
 		};
 	}
 }
@@ -163,7 +156,7 @@ export function createMcpHandler(appRouter: AnyRouter) {
 					],
 				};
 			}
-			return callTool(appRouter, tool, ctx, request.params.arguments);
+			return callTool(appRouter, tool, ctx, request.params);
 		});
 
 		const transport = new StreamableHTTPServerTransport({
