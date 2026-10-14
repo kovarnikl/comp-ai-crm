@@ -13,6 +13,7 @@ export {
 	isMicrosoftConfigured,
 	isSlackConfigured,
 } from "./env";
+export { MCP_PATH, mcpResourceUrl } from "./mcp";
 export {
 	canChangeRole,
 	canManageConnections,

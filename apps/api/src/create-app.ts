@@ -1,4 +1,9 @@
-import { API_KEY_HEADER, apiUrl, SESSION_COOKIE_NAME } from "@crm/auth";
+import {
+	API_KEY_HEADER,
+	apiUrl,
+	MCP_PATH,
+	SESSION_COOKIE_NAME,
+} from "@crm/auth";
 import { ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import {
@@ -15,6 +20,7 @@ import {
 } from "trpc-to-openapi";
 import { AppModule } from "./app.module";
 import { ContextLogger } from "./logging/context-logger";
+import { createMcpHandler } from "./mcp/mcp-handler";
 import { REST_BRIDGE_PATH } from "./trpc/openapi";
 import { createBaseTrpcContext } from "./trpc/trpc.context";
 
@@ -46,6 +52,18 @@ export async function createApp(): Promise<NestExpressApplication> {
 			void restBridge(req, res);
 		},
 	);
+
+	// Same late binding as the REST bridge: the route has to exist before
+	// app.init() so Nest's router does not shadow it, but the tool list needs
+	// the tRPC router, which only exists after init.
+	let mcpHandler: ((req: Request, res: Response) => Promise<void>) | undefined;
+	app.use(MCP_PATH, (req: Request, res: Response, next: NextFunction) => {
+		if (!mcpHandler) {
+			next();
+			return;
+		}
+		mcpHandler(req, res).catch(next);
+	});
 
 	const apiKeySecurityScheme = {
 		type: "apiKey",
@@ -111,6 +129,8 @@ export async function createApp(): Promise<NestExpressApplication> {
 		router: appRouter,
 		createContext: ({ req }) => createBaseTrpcContext(req),
 	});
+
+	mcpHandler = createMcpHandler(appRouter);
 
 	return app;
 }

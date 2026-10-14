@@ -50,6 +50,10 @@ model User {
 
   apiKeys Apikey[]
 
+  oauthApplications OauthApplication[]
+  oauthAccessTokens OauthAccessToken[]
+  oauthConsents     OauthConsent[]
+
   @@unique([email])
   @@map("user")
 }
@@ -1582,4 +1586,64 @@ model Apikey {
   @@index([configId])
   @@index([key])
   @@map("apikey")
+}
+
+// OAuth clients and tokens for the MCP endpoint (better-auth `mcp` plugin).
+// Claude and other MCP clients register themselves here dynamically and get
+// tokens that act as the signed-in user.
+model OauthApplication {
+  id           String    @id
+  name         String
+  icon         String?
+  metadata     String?
+  clientId     String    @unique
+  clientSecret String?
+  redirectUrls String
+  type         String
+  disabled     Boolean?  @default(false)
+  userId       String?
+  user         User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt    DateTime
+  updatedAt    DateTime
+
+  accessTokens OauthAccessToken[]
+  consents     OauthConsent[]
+
+  @@index([userId])
+  @@map("oauthApplication")
+}
+
+model OauthAccessToken {
+  id                    String           @id
+  accessToken           String           @unique
+  refreshToken          String           @unique
+  accessTokenExpiresAt  DateTime
+  refreshTokenExpiresAt DateTime
+  clientId              String
+  application           OauthApplication @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  userId                String?
+  user                  User?            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scopes                String
+  createdAt             DateTime
+  updatedAt             DateTime
+
+  @@index([clientId])
+  @@index([userId])
+  @@map("oauthAccessToken")
+}
+
+model OauthConsent {
+  id           String           @id
+  clientId     String
+  application  OauthApplication @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  userId       String
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scopes       String
+  consentGiven Boolean
+  createdAt    DateTime
+  updatedAt    DateTime
+
+  @@index([clientId])
+  @@index([userId])
+  @@map("oauthConsent")
 }
