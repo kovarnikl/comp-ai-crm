@@ -1,4 +1,5 @@
-import type { AnyProcedure, AnyRouter } from "@trpc/server";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { AnyProcedure, AnyRouter, ProcedureType } from "@trpc/server";
 import { z } from "zod";
 
 /**
@@ -22,69 +23,76 @@ const EXPOSED_ROUTERS = new Set([
 	"workspace",
 ]);
 
-type JsonSchema = Record<string, unknown>;
+/** The REST route `restMeta()` attaches; a procedure without one is not public API. */
+const restRoute = z.object({
+	openapi: z.object({
+		method: z.string(),
+		path: z.string(),
+		summary: z.string().optional(),
+	}),
+});
 
-type OpenApiMeta = {
-	openapi?: { method?: string; path?: string; summary?: string };
+type ToolInput = {
+	schema: Tool["inputSchema"];
+	/** True when the procedure's input is not an object and is passed as `input`. */
+	wrapped: boolean;
 };
 
 export type McpTool = {
 	/** Dotted tRPC path, e.g. `companies.create`. */
 	path: string;
-	/** True when the procedure's input is not an object and is passed as `input`. */
+	type: ProcedureType;
 	wrapped: boolean;
-	definition: {
-		name: string;
-		description: string;
-		inputSchema: JsonSchema & { type: "object" };
-		annotations: {
-			readOnlyHint: boolean;
-			destructiveHint: boolean;
-		};
-	};
+	definition: Tool;
 };
 
-const EMPTY_OBJECT: JsonSchema & { type: "object" } = {
-	type: "object",
-	properties: {},
+const NO_INPUT: ToolInput = {
+	schema: { type: "object", properties: {} },
+	wrapped: false,
 };
 
-function inputSchemaOf(procedure: AnyProcedure): {
-	schema: JsonSchema & { type: "object" };
-	wrapped: boolean;
-} {
-	const inputs = (procedure._def as { inputs?: unknown[] }).inputs ?? [];
-	const parser = inputs[0];
+type JsonSchemaNode = z.core.JSONSchema._JSONSchema;
 
-	// Duck-typed rather than `instanceof`: a second copy of zod in the bundle
-	// would fail the class check while producing a perfectly good schema.
-	if (typeof parser !== "object" || parser === null || !("_zod" in parser)) {
-		return { schema: EMPTY_OBJECT, wrapped: false };
-	}
+/** `true`/`false` are valid JSON Schemas, but MCP wants every property as an object. */
+function asObjectSchema(node: JsonSchemaNode): z.core.JSONSchema.JSONSchema {
+	if (node === true) return {};
+	if (node === false) return { not: {} };
+	return node;
+}
 
-	let schema: JsonSchema;
+function inputOf(procedure: AnyProcedure): ToolInput {
+	const [parser] = procedure._def.inputs;
+	if (!(parser instanceof z.ZodType)) return NO_INPUT;
+
+	let json: z.core.JSONSchema.BaseSchema;
 	try {
-		schema = z.toJSONSchema(parser as z.ZodType, {
-			io: "input",
-			unrepresentable: "any",
-		}) as JsonSchema;
+		json = z.toJSONSchema(parser, { io: "input", unrepresentable: "any" });
 	} catch {
-		return { schema: EMPTY_OBJECT, wrapped: false };
+		return NO_INPUT;
 	}
 
-	delete schema.$schema;
-
-	if (schema.type === "object") {
+	if (json.type === "object") {
 		return {
-			schema: schema as JsonSchema & { type: "object" },
+			schema: {
+				type: "object",
+				properties: Object.fromEntries(
+					Object.entries(json.properties ?? {}).map(([key, node]) => [
+						key,
+						asObjectSchema(node),
+					]),
+				),
+				required: json.required,
+			},
 			wrapped: false,
 		};
 	}
 
+	// The dialect marker belongs to a root schema, not to a property.
+	const { $schema: _dialect, ...input } = json;
 	return {
 		schema: {
 			type: "object",
-			properties: { input: schema },
+			properties: { input },
 			required: ["input"],
 		},
 		wrapped: true,
@@ -102,31 +110,33 @@ function describe(path: string, method: string, restPath: string): string {
  * here duplicates what a procedure does.
  */
 export function buildMcpTools(appRouter: AnyRouter): McpTool[] {
-	const procedures = appRouter._def.procedures as Record<string, AnyProcedure>;
+	// `AnyRouter` types its record loosely; tRPC flattens it to path → procedure.
+	const procedures: Record<string, AnyProcedure> = appRouter._def.procedures;
 	const tools: McpTool[] = [];
 
 	for (const [path, procedure] of Object.entries(procedures)) {
 		const router = path.split(".")[0] ?? "";
 		if (!EXPOSED_ROUTERS.has(router)) continue;
 
-		const openapi = (procedure._def.meta as OpenApiMeta | undefined)?.openapi;
-		if (!openapi?.method || !openapi.path) continue;
+		const route = restRoute.safeParse(procedure._def.meta);
+		if (!route.success) continue;
 
-		const method = openapi.method.toUpperCase();
-		const { schema, wrapped } = inputSchemaOf(procedure);
-		const destructive =
-			method === "DELETE" || /purge|archive/i.test(openapi.path);
+		const { method: rawMethod, path: restPath, summary } = route.data.openapi;
+		const method = rawMethod.toUpperCase();
+		const { schema, wrapped } = inputOf(procedure);
 
 		tools.push({
 			path,
+			type: procedure._def.type,
 			wrapped,
 			definition: {
 				name: path.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64),
-				description: openapi.summary ?? describe(path, method, openapi.path),
+				description: summary ?? describe(path, method, restPath),
 				inputSchema: schema,
 				annotations: {
 					readOnlyHint: method === "GET",
-					destructiveHint: destructive,
+					destructiveHint:
+						method === "DELETE" || /purge|archive/i.test(restPath),
 				},
 			},
 		});

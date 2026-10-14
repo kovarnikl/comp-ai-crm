@@ -11,19 +11,14 @@ import { API_URL } from "@/lib/env";
  * Path-suffixed variants (`…/oauth-protected-resource/api/mcp`) resolve to the
  * same documents, because this install has exactly one resource.
  */
-const DOCUMENTS = new Set([
-	"oauth-authorization-server",
-	"oauth-protected-resource",
-	"openid-configuration",
-]);
-
-const UPSTREAM: Record<string, string> = {
-	"oauth-authorization-server": "oauth-authorization-server",
-	"oauth-protected-resource": "oauth-protected-resource",
+/** Where each document a client may ask for comes from on the API. */
+const UPSTREAM = new Map([
+	["oauth-authorization-server", "oauth-authorization-server"],
+	["oauth-protected-resource", "oauth-protected-resource"],
 	// The `mcp` plugin has no OIDC document of its own; its OAuth metadata is
 	// what an OIDC-first client needs to carry on.
-	"openid-configuration": "oauth-authorization-server",
-};
+	["openid-configuration", "oauth-authorization-server"],
+]);
 
 const CORS = {
 	"Access-Control-Allow-Origin": "*",
@@ -38,14 +33,14 @@ export async function GET(
 	await connection();
 
 	const [name] = (await params).document;
-	if (!name || !DOCUMENTS.has(name)) {
+	const document = name ? UPSTREAM.get(name) : undefined;
+	if (!document) {
 		return new Response(null, { status: 404, headers: CORS });
 	}
 
-	const upstream = await fetch(
-		`${API_URL}/api/auth/.well-known/${UPSTREAM[name]}`,
-		{ headers: { accept: "application/json" } },
-	).catch(() => null);
+	const upstream = await fetch(`${API_URL}/api/auth/.well-known/${document}`, {
+		headers: { accept: "application/json" },
+	}).catch(() => null);
 
 	if (!upstream?.ok) {
 		return Response.json(
