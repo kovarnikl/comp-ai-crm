@@ -5,7 +5,7 @@
 			"project": ["tools/**/*.ts"]
 		},
 		"apps/api": {
-			"entry": ["api/index.ts", "scripts/*.ts", "test/**/*.spec.ts"],
+			"entry": ["src/vercel-entry.ts", "scripts/*.ts", "test/**/*.spec.ts"],
 			"project": ["src/**/*.ts", "scripts/**/*.ts"]
 		},
 		"apps/agent": {
